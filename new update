@@ -1,0 +1,106 @@
+import pyaudio
+import numpy as np
+import librosa
+import time
+import os
+import threading
+from collections import deque
+from sklearn.externals import joblib  # For model loading
+
+# Configuration
+CHUNK = 2048
+FORMAT = pyaudio.paFloat32
+CHANNELS = 1
+RATE = 22050
+MODEL_PATH = "chicken_classifier.pkl"
+ALARM_FILE = "alarm.wav"
+MIN_CONFIDENCE = 0.7
+MIN_DURATION = 2  # Seconds of continuous detection
+
+# Audio Feature Extraction Parameters
+N_MFCC = 13
+HOP_LENGTH = 512
+
+class ChickenDetector:
+    def __init__(self):
+        self.model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+        self.audio_buffer = deque(maxlen=int(RATE * 5 / CHUNK))  # 5-second buffer
+        self.detection_counter = 0
+        self.alarm_active = False
+        
+        # Initialize audio stream
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RATE,
+            input=True,
+            frames_per_buffer=CHUNK,
+            stream_callback=self._audio_callback
+        )
+
+    def _audio_callback(self, in_data, frame_count, time_info, status):
+        """Async audio callback for continuous processing"""
+        self.audio_buffer.append(in_data)
+        return (None, pyaudio.paContinue)
+
+    def _extract_features(self, audio):
+        """Extract MFCC features from audio data"""
+        try:
+            mfcc = librosa.feature.mfcc(
+                y=audio,
+                sr=RATE,
+                n_mfcc=N_MFCC,
+                hop_length=HOP_LENGTH
+            )
+            return np.mean(mfcc.T, axis=0)
+        except Exception as e:
+            print(f"Feature extraction error: {e}")
+            return None
+
+    def _predict_sound(self, features):
+        """Make prediction using the ML model"""
+        if self.model and features is not None:
+            return self.model.predict_proba([features])[0][1]
+        return 0.0
+
+    def _alarm_handler(self):
+        """Handle alarm playback in a separate thread"""
+        self.alarm_active = True
+        os.system(f"afplay {ALARM_FILE}")  # Platform-specific command
+        self.alarm_active = False
+
+    def run(self):
+        print("Starting chicken detection system...")
+        try:
+            while True:
+                if len(self.audio_buffer) > 0:
+                    # Convert buffer to numpy array
+                    audio_data = np.frombuffer(self.audio_buffer.popleft(), dtype=np.float32)
+                    
+                    # Extract features and predict
+                    features = self._extract_features(audio_data)
+                    confidence = self._predict_sound(features)
+                    
+                    if confidence > MIN_CONFIDENCE:
+                        self.detection_counter += 1
+                        print(f"Chicken detected! Confidence: {confidence:.2f} ({self.detection_counter}s)")
+                        
+                        # Trigger alarm after continuous detection
+                        if self.detection_counter >= MIN_DURATION and not self.alarm_active:
+                            threading.Thread(target=self._alarm_handler).start()
+                    else:
+                        self.detection_counter = max(0, self.detection_counter - 1)
+                    
+                time.sleep(0.1)
+                
+        except KeyboardInterrupt:
+            print("Shutting down...")
+        finally:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.p.terminate()
+
+if __name__ == "__main__":
+    detector = ChickenDetector()
+    detector.run()
