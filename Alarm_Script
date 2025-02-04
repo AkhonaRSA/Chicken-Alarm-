@@ -1,0 +1,68 @@
+import pyaudio
+import numpy as np
+import scipy.fftpack
+import time
+import os
+
+# Constants
+CHUNK = 1024  # Number of audio samples per frame
+FORMAT = pyaudio.paInt16  # Audio format
+CHANNELS = 1  # Mono audio
+RATE = 44100  # Sampling rate (samples per second)
+THRESHOLD = 500  # Adjust this threshold based on your environment
+FREQ_RANGE = (200, 1000)  # Frequency range for chicken sounds (in Hz)
+
+# Initialize PyAudio
+p = pyaudio.PyAudio()
+
+# Open the microphone stream
+stream = p.open(format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK)
+
+print("Listening for chicken sounds...")
+
+def analyze_audio(data):
+    """Analyze the audio data to detect chicken sounds."""
+    # Convert raw data to numpy array
+    audio_data = np.frombuffer(data, dtype=np.int16)
+    
+    # Perform FFT (Fast Fourier Transform) to get frequency components
+    fft_data = np.abs(scipy.fftpack.fft(audio_data))[:CHUNK // 2]
+    freqs = np.fft.fftfreq(len(fft_data), 1 / RATE)[:CHUNK // 2]
+    
+    # Check if the dominant frequency is within the chicken sound range
+    dominant_freq = freqs[np.argmax(fft_data)]
+    if FREQ_RANGE[0] <= dominant_freq <= FREQ_RANGE[1]:
+        return True
+    return False
+
+def trigger_alarm():
+    """Trigger an alarm (e.g., play a sound or print a message)."""
+    print("Chicken sound detected! Time to wake up!")
+    os.system("start alarmsound.wav")
+
+
+try:
+    while True:
+        # Read audio data from the stream
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        
+        # Analyze the audio data
+        if analyze_audio(data):
+            trigger_alarm()
+            break  # Stop listening after triggering the alarm
+        
+        # Sleep for a short time to reduce CPU usage
+        time.sleep(0.1)
+
+except KeyboardInterrupt:
+    print("Stopped listening.")
+
+finally:
+    # Clean up
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
