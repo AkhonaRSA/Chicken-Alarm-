@@ -1,0 +1,102 @@
+import pyaudio
+import numpy as np
+import scipy.fftpack
+import time
+import os
+import logging
+
+# Constants
+CHUNK = 1024  # Number of audio samples per frame
+FORMAT = pyaudio.paInt16  # Audio format
+CHANNELS = 1  # Mono audio
+RATE = 44100  # Sampling rate (samples per second)
+FREQ_RANGE = (200, 1000)  # Frequency range for chicken sounds (in Hz)
+NOISE_SAMPLES = 10  # Number of samples to calculate background noise level
+ALARM_SOUND = "alarm.wav"  # Path to the alarm sound file
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+
+# Initialize PyAudio
+p = pyaudio.PyAudio()
+
+# Open the microphone stream
+stream = p.open(format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK)
+
+logging.info("Listening for chicken sounds...")
+
+def calculate_noise_floor():
+    """Calculate the background noise level."""
+    noise_levels = []
+    for _ in range(NOISE_SAMPLES):
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        audio_data = np.frombuffer(data, dtype=np.int16)
+        noise_levels.append(np.abs(audio_data).mean())
+    return np.mean(noise_levels)
+
+def analyze_audio(data, noise_floor):
+    """Analyze the audio data to detect chicken sounds."""
+    # Convert raw data to numpy array
+    audio_data = np.frombuffer(data, dtype=np.int16)
+    
+    # Normalize audio data
+    audio_data = audio_data / np.max(np.abs(audio_data))
+    
+    # Perform FFT (Fast Fourier Transform) to get frequency components
+    fft_data = np.abs(scipy.fftpack.fft(audio_data))[:CHUNK // 2]
+    freqs = np.fft.fftfreq(len(fft_data), 1 / RATE)[:CHUNK // 2]
+    
+    # Find dominant frequency
+    dominant_freq = freqs[np.argmax(fft_data)]
+    dominant_amplitude = np.max(fft_data)
+    
+    # Check if the dominant frequency is within the chicken sound range
+    if FREQ_RANGE[0] <= dominant_freq <= FREQ_RANGE[1] and dominant_amplitude > noise_floor * 2:
+        logging.info(f"Detected sound at {dominant_freq:.2f} Hz with amplitude {dominant_amplitude:.2f}")
+        return True
+    return False
+
+def trigger_alarm():
+    """Trigger an alarm (e.g., play a sound or print a message)."""
+    logging.info("Chicken sound detected! Time to wake up!")
+    if os.path.exists(ALARM_SOUND):
+        os.system(f"afplay {ALARM_SOUND}")  # For macOS
+        # For Windows, use: os.system(f"start {ALARM_SOUND}")
+        # For Linux, use: os.system(f"aplay {ALARM_SOUND}")
+    else:
+        logging.warning(f"Alarm sound file '{ALARM_SOUND}' not found. Please provide a valid sound file.")
+
+def main():
+    try:
+        # Calculate background noise level
+        noise_floor = calculate_noise_floor()
+        logging.info(f"Background noise level: {noise_floor:.2f}")
+        
+        while True:
+            # Read audio data from the stream
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            
+            # Analyze the audio data
+            if analyze_audio(data, noise_floor):
+                trigger_alarm()
+                break  # Stop listening after triggering the alarm
+            
+            # Sleep for a short time to reduce CPU usage
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        logging.info("Stopped listening.")
+
+    finally:
+        # Clean up
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        logging.info("Microphone stream closed.")
+
+if __name__ == "__main__":
+    main()
