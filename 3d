@@ -1,0 +1,157 @@
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { OrbitControls, Effects, useTexture } from '@react-three/drei'
+import { useMemo, useRef, useState, useEffect } from 'react'
+import * as THREE from 'three'
+import { Leva, useControls } from 'leva'
+
+// Audio analyzer setup
+function useAudioAnalyzer() {
+  const [analyser, setAnalyser] = useState(null)
+  const [audioData, setAudioData] = useState(new Uint8Array(256))
+  const [playing, setPlaying] = useState(false)
+
+  useEffect(() => {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+    const analyserNode = audioContext.createAnalyser()
+    analyserNode.fftSize = 512
+    setAnalyser(analyserNode)
+
+    const source = audioContext.createMediaElementSource(
+      document.createElement('audio')
+    )
+    source.connect(analyserNode)
+    analyserNode.connect(audioContext.destination)
+
+    const dataArray = new Uint8Array(analyserNode.frequencyBinCount)
+    
+    const update = () => {
+      analyserNode.getByteFrequencyData(dataArray)
+      setAudioData(new Uint8Array(dataArray))
+      requestAnimationFrame(update)
+    }
+    update()
+
+    return () => audioContext.close()
+  }, [])
+
+  return { analyser, audioData, playing, setPlaying }
+}
+
+function AudioVisualizer() {
+  const meshRef = useRef()
+  const particlesRef = useRef()
+  const { analyser, audioData, playing, setPlaying } = useAudioAnalyzer()
+  const { viewport } = useThree()
+  
+  // Audio controls
+  const controls = useControls({
+    file: { value: 'https://assets.mixkit.co/music/preview/mixkit-tech-house-vibes-130.mp3', type: 'file' },
+    play: { value: false, onChange: (v) => setPlaying(v) },
+    scaleFactor: { value: 2, min: 0.1, max: 5 },
+    colorIntensity: { value: 1, min: 0, max: 2 }
+  })
+
+  // Particle system
+  const particles = useMemo(() => {
+    const count = 1000
+    const positions = new Float32Array(count * 3)
+    for (let i = 0; i < count * 3; i += 3) {
+      positions[i] = (Math.random() - 0.5) * 10
+      positions[i + 1] = (Math.random() - 0.5) * 10
+      positions[i + 2] = (Math.random() - 0.5) * 10
+    }
+    return positions
+  }, [])
+
+  useFrame(({ clock }) => {
+    if (!meshRef.current || !audioData) return
+    
+    // Update waveform geometry
+    const vertices = meshRef.current.geometry.attributes.position.array
+    for (let i = 0; i < vertices.length; i += 3) {
+      vertices[i + 1] = (audioData[i % 256] / 255) * controls.scaleFactor
+    }
+    meshRef.current.geometry.attributes.position.needsUpdate = true
+
+    // Update particles
+    const particlePositions = particlesRef.current.geometry.attributes.position.array
+    for (let i = 0; i < particlePositions.length; i += 3) {
+      particlePositions[i + 2] = Math.sin(clock.elapsedTime + i) * 
+        (audioData[i % 256] / 255) * 2
+    }
+    particlesRef.current.geometry.attributes.position.needsUpdate = true
+  })
+
+  return (
+    <>
+      {/* Main waveform */}
+      <mesh ref={meshRef} position={[0, 0, -5]}>
+        <planeGeometry args={[viewport.width, viewport.height, 256, 256]} />
+        <meshStandardMaterial
+          color={new THREE.Color().setHSL(
+            (audioData?.[128] || 0) / 255 * controls.colorIntensity,
+            0.8,
+            0.5
+          )}
+          wireframe
+          metalness={0.8}
+          roughness={0.2}
+        />
+      </mesh>
+
+      {/* Particles */}
+      <points ref={particlesRef}>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            count={particles.length / 3}
+            itemSize={3}
+            array={particles}
+          />
+        </bufferGeometry>
+        <pointsMaterial
+          size={0.1}
+          color={new THREE.Color().setHSL(
+            (audioData?.[64] || 0) / 255 * controls.colorIntensity,
+            0.8,
+            0.7
+          )}
+          transparent
+          sizeAttenuation
+        />
+      </points>
+
+      {/* Audio element */}
+      <audio
+        src={controls.file}
+        autoPlay={playing}
+        loop
+        style={{ display: 'none' }}
+      />
+    </>
+  )
+}
+
+function EffectsComposer() {
+  return (
+    <Effects>
+      <unrealBloomPass intensity={0.5} />
+      <glitchPass factor={0.1} />
+    </Effects>
+  )
+}
+
+export default function App() {
+  return (
+    <>
+      <Leva />
+      <Canvas camera={{ position: [0, 0, 10], fov: 75 }}>
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} intensity={1} />
+        <AudioVisualizer />
+        <OrbitControls enableZoom={false} />
+        <EffectsComposer />
+      </Canvas>
+    </>
+  )
+}
